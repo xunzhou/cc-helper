@@ -4,7 +4,7 @@ Claude Code helper scripts
 
 ## Scripts
 
-### cc-statusline.sh
+### cc-statusline
 
 Status line for Claude Code showing model, path, branch, and context usage.
 
@@ -29,7 +29,7 @@ Add to `~/.claude/settings.json`:
 
 **Requirements:** bash, git, jq, tac
 
-### git-commit-ai.sh
+### git-commit-ai
 
 AI-powered conventional commit message generator.
 

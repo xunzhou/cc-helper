@@ -24,7 +24,7 @@ LLM_CMD_TEMPLATE="${GIT_COMMIT_AI_LLM_CMD:-claude}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -vv|--vverbose|--very-verbose)
+        -vv|--very-verbose)
             VERBOSE_LEVEL=2
             shift
             ;;
