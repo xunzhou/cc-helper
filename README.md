@@ -1,31 +1,24 @@
-# cc-statusline.sh
+# cc-helper
 
-A minimal, standalone bash script for Claude Code `statusLine` that prints:
+Claude Code helper scripts
+
+## Scripts
+
+### cc-statusline.sh
+
+Status line for Claude Code showing model, path, branch, and context usage.
 
 ```
-model | path | branch | context window
+Sonnet 4.5 | cc-helper | main | 52% · 105k tokens
 ```
 
-Example:
-
-```
-Sonnet 4.5 | cc-statusline | master | 52% · 105k tokens
-```
-
-## Install
-
-Make it executable and put it on your `PATH` (one option):
-
+**Setup:**
 ```bash
 chmod +x cc-statusline.sh
-mkdir -p ~/.local/bin
-cp cc-statusline.sh ~/.local/bin/cc-statusline.sh
+cp cc-statusline.sh ~/.local/bin/
 ```
 
-## Configure
-
-In `~/.claude/settings.json`:
-
+Add to `~/.claude/settings.json`:
 ```json
 "statusLine": {
   "type": "command",
@@ -34,14 +27,25 @@ In `~/.claude/settings.json`:
 }
 ```
 
-## Requirements
+**Requirements:** bash, git, jq, tac
 
-- `bash`
-- `git` (branch detection)
-- `jq` (or a jq-compatible alternative; see `CC_STATUSLINE_JQ`)
-- `tac` (used to scan the transcript from the end; on macOS you may only have it if GNU coreutils is installed)
+### git-commit-ai.sh
 
-## Environment Variables
+AI-powered conventional commit message generator.
 
-- `CC_STATUSLINE_JQ`: jq binary name (default: `jq`)
+```bash
+git-commit-ai -c                  # Generate and commit
+git-commit-ai -v                  # Add brief body
+git-commit-ai -vv                 # Add detailed body
+git-commit-ai PROJ-123            # Prepend JIRA ticket
+git-commit-ai                     # Print message only
+```
+
+**Setup:**
+```bash
+chmod +x git-commit-ai.sh
+cp git-commit-ai.sh ~/.local/bin/git-commit-ai
+```
+
+**Requirements:** bash, git, claude CLI
 
