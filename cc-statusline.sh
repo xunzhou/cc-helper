@@ -55,7 +55,9 @@ get_git_branch() {
 get_context_limit() {
     local model_id_lower=$(echo "$1" | tr '[:upper:]' '[:lower:]')
 
-    if [[ "$model_id_lower" == *"sonnet-4-5"* ]] || [[ "$model_id_lower" == *"sonnet-3-7"* ]] || [[ "$model_id_lower" == *"sonnet-3.7"* ]]; then
+    if [[ "$model_id_lower" == *"opus-4-6"* ]] || [[ "$model_id_lower" == *"sonnet-4-6"* ]]; then
+        echo 1000000
+    elif [[ "$model_id_lower" == *"sonnet-4-5"* ]] || [[ "$model_id_lower" == *"sonnet-3-7"* ]] || [[ "$model_id_lower" == *"sonnet-3.7"* ]]; then
         echo 200000
     elif [[ "$model_id_lower" == *"opus-4-5"* ]] || [[ "$model_id_lower" == *"haiku-4"* ]]; then
         echo 200000
