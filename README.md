@@ -6,10 +6,19 @@ Claude Code helper scripts
 
 ### cc-statusline
 
-Status line for Claude Code showing model, path, branch, and context usage.
+Status line for Claude Code showing model (with version), path, branch, and context usage.
 
 ```
-Sonnet 4.5 | cc-helper | main | 52% · 105k tokens
+Opus 4.7 | cc-helper | main | 45% · 90k/200k
+```
+
+The context limit is detected from the model name Claude Code provides: an
+extended window shows up as e.g. `Opus 4.7 (1M context)`, which is parsed to
+1M. Without such a hint it defaults to 200k. Override with
+`CC_STATUSLINE_CONTEXT_LIMIT` if needed:
+
+```bash
+CC_STATUSLINE_CONTEXT_LIMIT=1000000 claude   # force a 1M limit
 ```
 
 **Setup:**
@@ -27,7 +36,7 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-**Requirements:** bash, git, jq, tac
+**Requirements:** bash, git, jq, Claude Code >= 2.1.132
 
 ### git-commit-ai
 

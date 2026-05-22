@@ -27,7 +27,17 @@ fi
 JSON_INPUT=$(cat)
 
 get_model_name() {
-    echo "$1" | "$JQ_BINARY" -r '(.model.display_name | select(length > 0)) // .model.id // "Unknown"' 2>/dev/null
+    local name id version
+    name=$(echo "$1" | "$JQ_BINARY" -r '(.model.display_name | select(length > 0)) // .model.id // "Unknown"' 2>/dev/null)
+    id=$(echo "$1" | "$JQ_BINARY" -r '.model.id // ""' 2>/dev/null)
+
+    # display_name is bare (e.g. "Opus"); pull the M.N version out of the id
+    # (claude-opus-4-7 -> 4.7) and append it, unless the name already has digits.
+    if [[ "$name" != *[0-9]* ]]; then
+        version=$(echo "$id" | grep -oE '[0-9]+-[0-9]+' | head -1 | tr '-' '.')
+        [[ -n "$version" ]] && name="$name $version"
+    fi
+    echo "$name"
 }
 
 get_directory() {
@@ -52,86 +62,68 @@ get_git_branch() {
     fi
 }
 
+# Effective context limit, in tokens. Claude Code's context_window_size reports
+# the model's native window (e.g. 1000000 for Opus 4.7), not the per-account cap,
+# so it can't tell a 200k plan from a 1M plan. Instead Claude Code annotates an
+# extended window in the model name, e.g. "Opus 4.7 (1M context)" — we parse that.
+# Resolution order: CC_STATUSLINE_CONTEXT_LIMIT override, then the name hint,
+# then 200000.
 get_context_limit() {
-    local model_id_lower=$(echo "$1" | tr '[:upper:]' '[:lower:]')
-
-    if [[ "$model_id_lower" == *"opus-4-6"* ]] || [[ "$model_id_lower" == *"sonnet-4-6"* ]]; then
-        echo 1000000
-    elif [[ "$model_id_lower" == *"sonnet-4-5"* ]] || [[ "$model_id_lower" == *"sonnet-3-7"* ]] || [[ "$model_id_lower" == *"sonnet-3.7"* ]]; then
-        echo 200000
-    elif [[ "$model_id_lower" == *"opus-4-5"* ]] || [[ "$model_id_lower" == *"haiku-4"* ]]; then
-        echo 200000
-    elif [[ "$model_id_lower" == *"glm-4.5"* ]] || [[ "$model_id_lower" == *"kimi-k2"* ]]; then
-        echo 128000
-    elif [[ "$model_id_lower" == *"qwen"* ]]; then
-        echo 256000
-    else
-        echo 200000
+    if [[ -n "${CC_STATUSLINE_CONTEXT_LIMIT:-}" ]]; then
+        echo "$CC_STATUSLINE_CONTEXT_LIMIT"
+        return
     fi
-}
 
-get_transcript_tokens() {
-    local transcript_path="$1"
-    [[ ! -f "$transcript_path" ]] && echo "0" && return
-    local tokens=0 found=false
-
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-
-        local msg_type=$(echo "$line" | "$JQ_BINARY" -r '.type // ""' 2>/dev/null)
-        if [[ "$msg_type" == "assistant" ]]; then
-            tokens=$(echo "$line" | "$JQ_BINARY" -r '
-                .message.usage as $u |
-                if $u then
-                    (($u.input_tokens // 0) +
-                     ($u.output_tokens // 0) +
-                     ($u.cache_read_input_tokens // 0) +
-                     ($u.cache_creation_input_tokens // 0))
-                else 0 end
-            ' 2>/dev/null)
-
-            if [[ "$tokens" -gt 0 ]]; then
-                found=true
-                break
-            fi
+    local hint num unit
+    hint=$(echo "$1" | grep -oiE '[0-9]+(\.[0-9]+)?[mk]\b' | head -1)
+    if [[ -n "$hint" ]]; then
+        num=$(echo "$hint" | grep -oE '[0-9]+(\.[0-9]+)?')
+        unit=$(echo "$hint" | grep -oiE '[mk]' | tr '[:upper:]' '[:lower:]')
+        if [[ "$unit" == "m" ]]; then
+            awk "BEGIN {printf \"%d\", $num * 1000000}"
+        else
+            awk "BEGIN {printf \"%d\", $num * 1000}"
         fi
-    done < <(tac "$transcript_path" 2>/dev/null)
-    echo "${tokens:-0}"
-}
-
-format_context() {
-    local tokens="$1" limit="$2"
-
-    [[ "$tokens" == "0" || -z "$tokens" || "$tokens" -le 0 ]] && echo "- · -" && return
-
-    local percentage=$(awk "BEGIN {printf \"%.0f\", ($tokens / $limit) * 100}" 2>/dev/null)
-    [[ -z "$percentage" ]] && percentage=0
-
-    local token_display
-    if [[ "$tokens" -ge 1000 ]]; then
-        token_display=$(awk "BEGIN {printf \"%.0fk\", $tokens / 1000}" 2>/dev/null)
-    else
-        token_display="$tokens"
+        return
     fi
 
-    echo "${percentage}% · ${token_display} tokens"
+    echo 200000
+}
+
+format_token_count() {
+    local tokens="$1"
+    if [[ "$tokens" -ge 1000000 ]]; then
+        awk "BEGIN {printf \"%g\", $tokens / 1000000}" 2>/dev/null | sed 's/$/M/'
+    elif [[ "$tokens" -ge 1000 ]]; then
+        awk "BEGIN {printf \"%.0fk\", $tokens / 1000}" 2>/dev/null
+    else
+        echo "$tokens"
+    fi
 }
 
 get_context_window() {
-    local model_id transcript_path
-    model_id=$(echo "$1" | "$JQ_BINARY" -r '.model.id // ""' 2>/dev/null)
-    transcript_path=$(echo "$1" | "$JQ_BINARY" -r '.transcript_path // ""' 2>/dev/null)
+    local input_tokens="$1" limit="$2"
 
-    local limit=$(get_context_limit "$model_id")
+    # No usage yet: before the first API response, or right after /compact.
+    if [[ -z "$input_tokens" || "$input_tokens" -le 0 ]]; then
+        echo "- · -"
+        return
+    fi
 
-    local tokens=$(get_transcript_tokens "$transcript_path")
+    local percentage=$(awk "BEGIN {printf \"%.0f\", ($input_tokens / $limit) * 100}" 2>/dev/null)
+    local token_display=$(format_token_count "$input_tokens")
 
-    format_context "$tokens" "$limit"
+    echo "${percentage}% · ${token_display}/$(format_token_count "$limit")"
 }
 
 MODEL=$(get_model_name "$JSON_INPUT")
 DIRECTORY=$(get_directory "$JSON_INPUT")
 BRANCH=$(get_git_branch "$JSON_INPUT")
-CONTEXT=$(get_context_window "$JSON_INPUT")
+
+# total_input_tokens (input + cache read/write) is the numerator Claude Code
+# uses for used_percentage; we recompute it against the effective limit.
+INPUT_TOKENS=$(echo "$JSON_INPUT" | "$JQ_BINARY" -r '.context_window.total_input_tokens // 0' 2>/dev/null)
+LIMIT=$(get_context_limit "$MODEL")
+CONTEXT=$(get_context_window "$INPUT_TOKENS" "$LIMIT")
 
 echo "${MODEL} | ${DIRECTORY} | ${BRANCH} | ${CONTEXT}"
