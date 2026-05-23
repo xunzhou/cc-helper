@@ -123,6 +123,8 @@ get_rate_limit() {
     local pct resets_at
     pct=$(echo "$1" | "$JQ_BINARY" -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null)
     [[ -z "$pct" ]] && return
+    # Round to 1 decimal place; %g drops trailing .0 (e.g. 28.0000004 -> 28, 28.5 -> 28.5)
+    pct=$(awk "BEGIN { printf \"%g\", int($pct * 10 + 0.5) / 10 }" 2>/dev/null)
     resets_at=$(echo "$1" | "$JQ_BINARY" -r '.rate_limits.five_hour.resets_at // empty' 2>/dev/null)
 
     local remaining=""
