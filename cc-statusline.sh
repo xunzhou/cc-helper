@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude Code Statusline - Minimal fundamentals display
-# Shows: model | path | branch | context window
+# Shows: model | path | branch | context window | lim rate-limit | session cost
 # Requires: jq (JSON processor) or compatible alternative (e.g., jaq)
 
 set -o pipefail
@@ -108,6 +108,39 @@ get_context_window() {
     echo "${percentage}% · ${token_display}/$(format_token_count "$limit")"
 }
 
+# Session cost in USD from .cost.total_cost_usd. Empty if missing/zero so the
+# caller can drop the segment.
+get_session_cost() {
+    local cost
+    cost=$(echo "$1" | "$JQ_BINARY" -r '.cost.total_cost_usd // empty' 2>/dev/null)
+    [[ -z "$cost" ]] && return
+    awk "BEGIN {if ($cost <= 0) exit 1; printf \"\$%.2f\", $cost}" 2>/dev/null
+}
+
+# 5h rate-limit usage + time until reset. Empty if Claude Code didn't send the
+# bucket (e.g. base plan without rate_limits).
+get_rate_limit() {
+    local pct resets_at
+    pct=$(echo "$1" | "$JQ_BINARY" -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null)
+    [[ -z "$pct" ]] && return
+    resets_at=$(echo "$1" | "$JQ_BINARY" -r '.rate_limits.five_hour.resets_at // empty' 2>/dev/null)
+
+    local remaining=""
+    if [[ -n "$resets_at" ]]; then
+        local diff=$(( resets_at - $(date +%s) ))
+        if [[ $diff -gt 0 ]]; then
+            local h=$(( diff / 3600 ))
+            local m=$(( (diff % 3600) / 60 ))
+            if [[ $h -gt 0 ]]; then
+                remaining=" (${h}h${m}m)"
+            else
+                remaining=" (${m}m)"
+            fi
+        fi
+    fi
+    echo "lim ${pct}%${remaining}"
+}
+
 MODEL=$(get_model_name "$JSON_INPUT")
 DIRECTORY=$(get_directory "$JSON_INPUT")
 BRANCH=$(get_git_branch "$JSON_INPUT")
@@ -117,5 +150,10 @@ BRANCH=$(get_git_branch "$JSON_INPUT")
 INPUT_TOKENS=$(echo "$JSON_INPUT" | "$JQ_BINARY" -r '.context_window.total_input_tokens // 0' 2>/dev/null)
 LIMIT=$(get_context_limit "$JSON_INPUT")
 CONTEXT=$(get_context_window "$INPUT_TOKENS" "$LIMIT")
+COST=$(get_session_cost "$JSON_INPUT")
+RATE=$(get_rate_limit "$JSON_INPUT")
 
-echo "${MODEL} | ${DIRECTORY} | ${BRANCH} | ${CONTEXT}"
+LINE="${MODEL} | ${DIRECTORY} | ${BRANCH} | ${CONTEXT}"
+[[ -n "$RATE" ]] && LINE="${LINE} | ${RATE}"
+[[ -n "$COST" ]] && LINE="${LINE} | ${COST}"
+echo "$LINE"
