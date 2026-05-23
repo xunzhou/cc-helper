@@ -62,28 +62,20 @@ get_git_branch() {
     fi
 }
 
-# Effective context limit, in tokens. Claude Code's context_window_size reports
-# the model's native window (e.g. 1000000 for Opus 4.7), not the per-account cap,
-# so it can't tell a 200k plan from a 1M plan. Instead Claude Code annotates an
-# extended window in the model name, e.g. "Opus 4.7 (1M context)" — we parse that.
-# Resolution order: CC_STATUSLINE_CONTEXT_LIMIT override, then the name hint,
-# then 200000.
+# Effective context limit, in tokens. Resolution order:
+# CC_STATUSLINE_CONTEXT_LIMIT override, then .context_window.context_window_size
+# from Claude Code's stdin (per-account effective limit — e.g. 200000 on base
+# plans, 1000000 on Max), then 200000 as a last-resort fallback.
 get_context_limit() {
     if [[ -n "${CC_STATUSLINE_CONTEXT_LIMIT:-}" ]]; then
         echo "$CC_STATUSLINE_CONTEXT_LIMIT"
         return
     fi
 
-    local hint num unit
-    hint=$(echo "$1" | grep -oiE '[0-9]+(\.[0-9]+)?[mk]\b' | head -1)
-    if [[ -n "$hint" ]]; then
-        num=$(echo "$hint" | grep -oE '[0-9]+(\.[0-9]+)?')
-        unit=$(echo "$hint" | grep -oiE '[mk]' | tr '[:upper:]' '[:lower:]')
-        if [[ "$unit" == "m" ]]; then
-            awk "BEGIN {printf \"%d\", $num * 1000000}"
-        else
-            awk "BEGIN {printf \"%d\", $num * 1000}"
-        fi
+    local size
+    size=$(echo "$1" | "$JQ_BINARY" -r '.context_window.context_window_size // 0' 2>/dev/null)
+    if [[ "$size" -gt 0 ]]; then
+        echo "$size"
         return
     fi
 
@@ -123,7 +115,7 @@ BRANCH=$(get_git_branch "$JSON_INPUT")
 # total_input_tokens (input + cache read/write) is the numerator Claude Code
 # uses for used_percentage; we recompute it against the effective limit.
 INPUT_TOKENS=$(echo "$JSON_INPUT" | "$JQ_BINARY" -r '.context_window.total_input_tokens // 0' 2>/dev/null)
-LIMIT=$(get_context_limit "$MODEL")
+LIMIT=$(get_context_limit "$JSON_INPUT")
 CONTEXT=$(get_context_window "$INPUT_TOKENS" "$LIMIT")
 
 echo "${MODEL} | ${DIRECTORY} | ${BRANCH} | ${CONTEXT}"
