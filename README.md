@@ -6,22 +6,19 @@ Claude Code helper scripts
 
 ### cc-statusline
 
-Status line for Claude Code showing model (with version), path, branch, and context usage.
+Status line for Claude Code: model, path, branch, context usage, 5h rate-limit, session cost.
 
 ```
-Opus 4.7 | cc-helper | main | 45% · 90k/200k
+Opus 4.7 | cc-helper | main | 4% · 37k/1M | lim 21% (3h13m) | $0.41
 ```
 
-The context limit is detected from the model name Claude Code provides: an
-extended window shows up as e.g. `Opus 4.7 (1M context)`, which is parsed to
-1M. Without such a hint it defaults to 200k. Override with
-`CC_STATUSLINE_CONTEXT_LIMIT` if needed:
+Reads every value from Claude Code's stdin — no network calls, no external tools.
+The `lim` and `$` segments drop automatically when the underlying fields are
+absent (base plans without `rate_limits`, fresh sessions).
 
-```bash
-CC_STATUSLINE_CONTEXT_LIMIT=1000000 claude   # force a 1M limit
-```
+<details>
+<summary>Setup</summary>
 
-**Setup:**
 ```bash
 chmod +x cc-statusline.sh
 cp cc-statusline.sh ~/.local/bin/
@@ -36,13 +33,25 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-**Requirements:** bash, git, jq, Claude Code >= 2.1.132
+Requirements: bash, git, jq, Claude Code >= 2.1.132
+</details>
+
+<details>
+<summary>Context-limit detection</summary>
+
+Read from `.context_window.context_window_size` in stdin — the per-account
+effective limit (200k on base plans, 1M on Max). Override with
+`CC_STATUSLINE_CONTEXT_LIMIT` if needed:
+
+```bash
+CC_STATUSLINE_CONTEXT_LIMIT=1000000 claude
+```
+</details>
 
 ### cc-usage
 
-Rate-limit utilization without launching Claude. Discovers every `~/.claude*`
-dir with a `.credentials.json` (e.g. `~/.claude`, `~/.claude-work`) and queries
-the same `/api/oauth/usage` endpoint as Claude Code's `/usage` screen.
+Rate-limit utilization without launching Claude. Auto-discovers every `~/.claude*`
+profile and queries the same `/api/oauth/usage` endpoint Claude Code's `/usage` screen uses.
 
 ```
  default
@@ -58,7 +67,9 @@ cc-usage --list          # name -> dir
 cc-usage --raw           # raw JSON
 ```
 
-**Setup:**
+<details>
+<summary>Setup</summary>
+
 ```bash
 chmod +x cc-usage
 cp cc-usage ~/.local/bin/
@@ -69,7 +80,8 @@ For a proxied profile, set `HTTPS_PROXY` on the call:
 alias cc-usage-work='HTTPS_PROXY=http://proxy:port cc-usage -p work'
 ```
 
-**Requirements:** [uv](https://docs.astral.sh/uv/) — deps are declared inline (PEP 723), no manual install.
+Requirements: [uv](https://docs.astral.sh/uv/) — deps declared inline (PEP 723), no manual install.
+</details>
 
 ### git-commit-ai
 
@@ -83,11 +95,14 @@ git-commit-ai PROJ-123            # Prepend JIRA ticket
 git-commit-ai                     # Print message only
 ```
 
-**Setup:**
+<details>
+<summary>Setup</summary>
+
 ```bash
 chmod +x git-commit-ai.sh
 cp git-commit-ai.sh ~/.local/bin/git-commit-ai
 ```
 
-**Requirements:** bash, git, claude CLI
+Requirements: bash, git, claude CLI
+</details>
 
