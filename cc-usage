@@ -1,0 +1,286 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["httpx>=0.27", "rich>=13"]
+# ///
+"""cc-usage — show Claude Code rate-limit utilization across local profiles."""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+
+import httpx
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+API_URL = "https://api.anthropic.com/api/oauth/usage"
+BETA_HEADER = "oauth-2025-04-20"
+MAX_RETRIES = 3
+MAX_BACKOFF = 30.0
+
+BUCKETS = [
+    ("five_hour", "5h"),
+    ("seven_day", "7d"),
+    ("seven_day_sonnet", "7d sonnet"),
+    ("seven_day_opus", "7d opus"),
+]
+
+
+@dataclass
+class Profile:
+    name: str
+    config_dir: Path
+
+    @property
+    def credentials_path(self) -> Path:
+        return self.config_dir / ".credentials.json"
+
+    def _oauth(self) -> dict:
+        try:
+            data = json.loads(self.credentials_path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+        return data.get("claudeAiOauth") or {}
+
+    def token(self) -> str | None:
+        return self._oauth().get("accessToken")
+
+    def expires_at(self) -> datetime | None:
+        ms = self._oauth().get("expiresAt")
+        if not isinstance(ms, (int, float)):
+            return None
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+    def is_expired(self) -> bool:
+        when = self.expires_at()
+        return when is not None and when <= datetime.now(timezone.utc)
+
+    def refresh_hint(self) -> str:
+        if self.name == "default":
+            return "run `claude` (or `/login` inside Claude Code) to refresh the token"
+        return (f"run your wrapper for the '{self.name}' profile "
+                f"(the one that sets CLAUDE_CONFIG_DIR={self.config_dir}) to refresh")
+
+
+def discover(pattern: str) -> list[Profile]:
+    profiles: list[Profile] = []
+    seen: set[str] = set()
+    for path in sorted(glob.glob(os.path.expanduser(pattern))):
+        p = Path(path)
+        if not p.is_dir() or not (p / ".credentials.json").is_file():
+            continue
+        base = p.name
+        if base == ".claude":
+            name = "default"
+        elif base.startswith(".claude-") or base.startswith(".claude_"):
+            name = base[len(".claude-"):]
+        elif base.startswith(".claude"):
+            name = base[len(".claude"):].lstrip("-_.") or "default"
+        else:
+            name = base
+        if name in seen:
+            continue
+        seen.add(name)
+        profiles.append(Profile(name=name, config_dir=p))
+    return profiles
+
+
+def _retry_after(resp: httpx.Response, attempt: int) -> float:
+    ra = resp.headers.get("retry-after")
+    if ra:
+        try:
+            return min(float(ra), MAX_BACKOFF)
+        except ValueError:
+            pass
+    return min(2.0 ** attempt, MAX_BACKOFF)
+
+
+def fetch(token: str, *, timeout: float = 10.0,
+          on_wait: Callable[[str], None] | None = None) -> dict:
+    """GET /api/oauth/usage with retry on 429 and transient network errors.
+
+    on_wait(message) is called once per retry so the caller can drive a spinner.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": BETA_HEADER,
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=timeout) as client:
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                r = client.get(API_URL, headers=headers)
+            except (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
+                    httpx.PoolTimeout, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                if attempt >= MAX_RETRIES:
+                    raise
+                wait = min(2.0 ** attempt, MAX_BACKOFF)
+                if on_wait:
+                    on_wait(f"network error ({type(e).__name__}); "
+                            f"retry {attempt + 1}/{MAX_RETRIES} in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+
+            if r.status_code in (429, 502, 503, 504) and attempt < MAX_RETRIES:
+                wait = _retry_after(r, attempt + 1)
+                label = "rate limited" if r.status_code == 429 else f"HTTP {r.status_code}"
+                if on_wait:
+                    on_wait(f"{label}; retry {attempt + 1}/{MAX_RETRIES} in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+
+            r.raise_for_status()
+            return r.json()
+    raise RuntimeError("unreachable")
+
+
+def parse_when(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def humanize_until(target: datetime) -> str:
+    delta = target - datetime.now(timezone.utc)
+    seconds = int(delta.total_seconds())
+    if seconds <= 0:
+        return "now"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    if days:
+        return f"in {days}d {hours}h"
+    if hours:
+        return f"in {hours}h {minutes}m"
+    return f"in {minutes}m"
+
+
+def bar(pct: float, width: int = 20) -> Text:
+    pct = max(0.0, min(100.0, pct))
+    filled = int(round(pct / 100 * width))
+    if pct >= 80:
+        color = "red"
+    elif pct >= 50:
+        color = "yellow"
+    else:
+        color = "green"
+    t = Text()
+    t.append("█" * filled, style=color)
+    t.append("░" * (width - filled), style="dim")
+    return t
+
+
+def render_profile(console: Console, profile: Profile, data: dict) -> None:
+    console.print(Text(f" {profile.name} ", style="bold reverse"))
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="cyan", no_wrap=True)
+    table.add_column(no_wrap=True)
+    table.add_column(justify="right", no_wrap=True)
+    table.add_column(style="dim", no_wrap=True)
+
+    rows = 0
+    for key, label in BUCKETS:
+        b = data.get(key)
+        if not b or b.get("utilization") is None:
+            continue
+        pct = float(b["utilization"])
+        when = parse_when(b.get("resets_at"))
+        rel = humanize_until(when) if when else "—"
+        table.add_row(label, bar(pct), f"{pct:>5.1f}%", f"resets {rel}")
+        rows += 1
+
+    extra = data.get("extra_usage") or {}
+    if extra.get("is_enabled"):
+        used = extra.get("used_credits") or 0
+        limit = extra.get("monthly_limit")
+        curr = extra.get("currency") or ""
+        table.add_row("extra", Text(" " * 20), f"{used}/{limit} {curr}", "")
+        rows += 1
+
+    if rows == 0:
+        console.print("  (no usage buckets reported)", style="dim")
+    else:
+        console.print(table)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("-p", "--profile", action="append", metavar="NAME",
+                    help="profile to query (repeatable). Default: all discovered.")
+    ap.add_argument("--list", action="store_true", help="list discovered profiles and exit.")
+    ap.add_argument("--raw", action="store_true", help="print raw JSON.")
+    ap.add_argument("--pattern", default="~/.claude*",
+                    help="glob for profile dirs (default: %(default)s).")
+    args = ap.parse_args(argv)
+
+    out = Console()
+    err = Console(stderr=True, style="red")
+
+    profiles = discover(args.pattern)
+    if not profiles:
+        err.print(f"no profiles with .credentials.json found matching {args.pattern}")
+        return 1
+
+    if args.list:
+        for p in profiles:
+            out.print(f"{p.name}\t{p.config_dir}")
+        return 0
+
+    if args.profile:
+        wanted = set(args.profile)
+        missing = wanted - {p.name for p in profiles}
+        if missing:
+            err.print(f"unknown profile(s): {', '.join(sorted(missing))} "
+                      f"(have: {', '.join(p.name for p in profiles)})")
+            return 2
+        profiles = [p for p in profiles if p.name in wanted]
+
+    rc = 0
+    for i, p in enumerate(profiles):
+        if i:
+            out.print()
+        token = p.token()
+        if not token:
+            err.print(f"({p.name}) no claudeAiOauth.accessToken in {p.credentials_path}")
+            rc = 1
+            continue
+        if p.is_expired():
+            err.print(f"({p.name}) token expired at {p.expires_at():%Y-%m-%d %H:%M %Z}; "
+                      f"{p.refresh_hint()}")
+            rc = 1
+            continue
+        try:
+            with out.status(f"({p.name}) querying usage…", spinner="dots") as status:
+                data = fetch(token, on_wait=lambda msg: status.update(f"({p.name}) {msg}"))
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                err.print(f"({p.name}) 401 unauthorized; {p.refresh_hint()}")
+            else:
+                err.print(f"({p.name}) HTTP {e.response.status_code}: {e.response.text[:200]}")
+            rc = 1
+            continue
+        except httpx.HTTPError as e:
+            err.print(f"({p.name}) request failed: {e}")
+            rc = 1
+            continue
+        if args.raw:
+            out.print_json(data=data)
+        else:
+            render_profile(out, p, data)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

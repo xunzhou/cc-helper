@@ -38,6 +38,39 @@ Add to `~/.claude/settings.json`:
 
 **Requirements:** bash, git, jq, Claude Code >= 2.1.132
 
+### cc-usage
+
+Rate-limit utilization without launching Claude. Discovers every `~/.claude*`
+dir with a `.credentials.json` (e.g. `~/.claude`, `~/.claude-work`) and queries
+the same `/api/oauth/usage` endpoint as Claude Code's `/usage` screen.
+
+```
+ default
+5h         █████░░░░░░░░░░░░░░░   24.0%  resets in 3h 36m
+7d         █░░░░░░░░░░░░░░░░░░░    4.0%  resets in 1d 6h
+7d sonnet  ░░░░░░░░░░░░░░░░░░░░    2.0%  resets in 1d 6h
+```
+
+```bash
+cc-usage                 # all profiles
+cc-usage -p work         # one profile (repeatable)
+cc-usage --list          # name -> dir
+cc-usage --raw           # raw JSON
+```
+
+**Setup:**
+```bash
+chmod +x cc-usage
+cp cc-usage ~/.local/bin/
+```
+
+For a proxied profile, set `HTTPS_PROXY` on the call:
+```bash
+alias cc-usage-work='HTTPS_PROXY=http://proxy:port cc-usage -p work'
+```
+
+**Requirements:** [uv](https://docs.astral.sh/uv/) — deps are declared inline (PEP 723), no manual install.
+
 ### git-commit-ai
 
 AI-powered conventional commit message generator.
