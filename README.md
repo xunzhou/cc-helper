@@ -6,15 +6,16 @@ Claude Code helper scripts
 
 ### cc-statusline
 
-Status line for Claude Code: model, path, branch, context usage, 5h rate-limit, session cost.
+Status line for Claude Code: model + effort, path, branch, context usage, 5h rate-limit, session cost.
 
 ```
-Opus 4.7 | cc-helper | main | 4% · 37k/1M | lim 21% (3h13m) | $0.41
+Opus 4.7 hi | cc-helper | main | 4% · 37k/1M | lim 21% (3h13m) | $0.41
 ```
 
 Reads every value from Claude Code's stdin — no network calls, no external tools.
-The `lim` and `$` segments drop automatically when the underlying fields are
-absent (base plans without `rate_limits`, fresh sessions).
+The effort suffix (`lo`/`md`/`hi`/`xh`/`mx`) is appended when the model supports
+the `effort` parameter. The `lim` and `$` segments drop automatically when the
+underlying fields are absent (base plans without `rate_limits`, fresh sessions).
 
 <details>
 <summary>Setup</summary>
