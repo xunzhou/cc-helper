@@ -27,7 +27,7 @@ fi
 JSON_INPUT=$(cat)
 
 get_model_name() {
-    local name id version
+    local name id version effort
     name=$(echo "$1" | "$JQ_BINARY" -r '(.model.display_name | select(length > 0)) // .model.id // "Unknown"' 2>/dev/null)
     id=$(echo "$1" | "$JQ_BINARY" -r '.model.id // ""' 2>/dev/null)
 
@@ -37,6 +37,17 @@ get_model_name() {
         version=$(echo "$id" | grep -oE '[0-9]+-[0-9]+' | head -1 | tr '-' '.')
         [[ -n "$version" ]] && name="$name $version"
     fi
+
+    # Append 2-char effort suffix when the model supports it. Absent for models
+    # without an effort parameter.
+    effort=$(echo "$1" | "$JQ_BINARY" -r '.effort.level // empty' 2>/dev/null)
+    case "$effort" in
+        low)    name="$name lo" ;;
+        medium) name="$name md" ;;
+        high)   name="$name hi" ;;
+        xhigh)  name="$name xh" ;;
+        max)    name="$name mx" ;;
+    esac
     echo "$name"
 }
 
