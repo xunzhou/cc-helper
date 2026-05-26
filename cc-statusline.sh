@@ -31,6 +31,9 @@ get_model_name() {
     name=$(echo "$1" | "$JQ_BINARY" -r '(.model.display_name | select(length > 0)) // .model.id // "Unknown"' 2>/dev/null)
     id=$(echo "$1" | "$JQ_BINARY" -r '.model.id // ""' 2>/dev/null)
 
+    # Strip the "(1M context)" qualifier; the context window is shown elsewhere.
+    name=$(echo "$name" | sed -E 's/ *\(1M context\)//')
+
     # display_name is bare (e.g. "Opus"); pull the M.N version out of the id
     # (claude-opus-4-7 -> 4.7) and append it, unless the name already has digits.
     if [[ "$name" != *[0-9]* ]]; then
