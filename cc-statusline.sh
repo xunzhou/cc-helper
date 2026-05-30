@@ -227,7 +227,7 @@ get_rate_limit() {
     for (( i=filled; i<10; i++ )); do bar+="░"; done
     bar+="${C_RESET}"
 
-    echo "${bar} ${color}${disp}%${C_RESET}${remaining}"
+    echo "${color}${disp}%${C_RESET} ${bar}${remaining}"
 }
 
 MODEL=$(get_model_name "$JSON_INPUT")

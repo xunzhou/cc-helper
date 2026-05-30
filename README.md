@@ -9,7 +9,7 @@ Claude Code helper scripts
 Status line for Claude Code: model + effort, path, branch, context usage, 5h quota bar, session cost.
 
 ```
-Opus 4.7 hi | cc-helper | main | 4% 37k/1M | ███▓▓░░░░░ 48% 3h30m | $0.41
+Opus 4.7 hi | cc-helper | main | 4% 37k/1M | 48% ███▓▓░░░░░ 3h30m | $0.41
 ```
 
 Reads every value from Claude Code's stdin — no network calls, no external tools.
