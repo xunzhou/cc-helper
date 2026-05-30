@@ -158,9 +158,14 @@ get_rate_limit() {
     local now remaining=""
     now=$(date +%s)
 
+    local pct7 resets7
+    pct7=$(echo "$1" | "$JQ_BINARY" -r '.rate_limits.seven_day.used_percentage // empty' 2>/dev/null)
+    resets7=$(echo "$1" | "$JQ_BINARY" -r '.rate_limits.seven_day.resets_at // empty' 2>/dev/null)
+
     local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}" profile
     profile=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"); profile=${profile#.}
-    printf '%s %s %s\n' "$pct" "${resets_at:-0}" "$now" > "${cache_dir}/.cc-quota.${profile}.$$" 2>/dev/null \
+    # Cache line: <5h_pct> <5h_resets> <written> <7d_pct> <7d_resets>
+    printf '%s %s %s %s %s\n' "$pct" "${resets_at:-0}" "$now" "${pct7:-NA}" "${resets7:-0}" > "${cache_dir}/.cc-quota.${profile}.$$" 2>/dev/null \
         && mv -f "${cache_dir}/.cc-quota.${profile}.$$" "${cache_dir}/cc-quota.${profile}" 2>/dev/null
 
     if [[ -n "$resets_at" ]]; then
