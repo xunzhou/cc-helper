@@ -6,16 +6,20 @@ Claude Code helper scripts
 
 ### cc-statusline
 
-Status line for Claude Code: model + effort, path, branch, context usage, 5h rate-limit, session cost.
+Status line for Claude Code: model + effort, path, branch, context usage, 5h quota bar, session cost.
 
 ```
-Opus 4.7 hi | cc-helper | main | 4% · 37k/1M | lim 21% (3h13m) | $0.41
+Opus 4.7 hi | cc-helper | main | 4% 37k/1M | ███▓▓░░░░░ 48% 3h30m | $0.41
 ```
 
 Reads every value from Claude Code's stdin — no network calls, no external tools.
 The effort suffix (`lo`/`md`/`hi`/`xh`/`mx`) is appended when the model supports
-the `effort` parameter. The `lim` and `$` segments drop automatically when the
-underlying fields are absent (base plans without `rate_limits`, fresh sessions).
+the `effort` parameter.
+
+The 5h quota bar is 10 cells (10% each): `█` used on pace, `▓` used ahead of
+pace, `░` remaining. It turns yellow when ahead of pace, red at ≥90%. Set
+`NO_COLOR` or `CC_STATUSLINE_NO_COLOR` to render it plain. The quota bar and `$`
+segments drop when their fields are absent.
 
 <details>
 <summary>Setup</summary>
