@@ -201,7 +201,12 @@ TEMPLATE
 # Determine LLM command based on template
 case "$LLM_CMD_TEMPLATE" in
     claude)
-        LLM_CMD='claude --print --tools "" --dangerously-skip-permissions'
+        # Tag this headless run via CLAUDE_CODE_ENTRYPOINT so the desktop-workflow
+        # session explorer can filter it out by a stable field (entrypoint) rather
+        # than matching the prompt text. The assignment is inline in the command so
+        # it survives the `bash -lc` login-shell sourcing below. Claude stamps the
+        # value onto every transcript line.
+        LLM_CMD='CLAUDE_CODE_ENTRYPOINT=git-commit-ai claude --print --tools "" --dangerously-skip-permissions'
         ;;
     opencode)
         LLM_CMD='opencode run --format default "Follow the attached prompt file exactly. Output ONLY the JSON object requested." --file "$GIT_COMMIT_AI_PROMPT_FILE"'
