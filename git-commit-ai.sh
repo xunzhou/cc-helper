@@ -1,6 +1,6 @@
 #!/bin/bash
 # AI-powered commit message generator for lazygit
-# Usage: git-commit-ai [-v|-vv] [-c] [JIRA-TICKET]
+# Usage: git-commit-ai [-v|-vv] [-c] [--amend] [JIRA-TICKET]
 
 set -euo pipefail
 
@@ -19,6 +19,7 @@ fi
 VERBOSE_LEVEL=0
 JIRA_TICKET=""
 AUTO_COMMIT=false
+AMEND=false
 LLM_TIMEOUT_SECONDS="${GIT_COMMIT_AI_TIMEOUT_SECONDS:-30}"
 LLM_CMD_TEMPLATE="${GIT_COMMIT_AI_LLM_CMD:-claude}"
 
@@ -36,13 +37,18 @@ while [[ $# -gt 0 ]]; do
             AUTO_COMMIT=true
             shift
             ;;
+        --amend)
+            AMEND=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: git-commit-ai [-v|-vv] [-c] [JIRA-TICKET]"
+            echo "Usage: git-commit-ai [-v|-vv] [-c] [--amend] [JIRA-TICKET]"
             echo ""
             echo "Options:"
             echo "  -v, --verbose       Add brief body (1-3 bullets)"
             echo "  -vv,--very-verbose  Add detailed body (3-5 bullets)"
             echo "  -c, --commit     Automatically commit with generated message"
+            echo "  --amend          Regenerate the last commit's message (folds in staged changes)"
             echo "  -h, --help       Show this help message"
             echo ""
             echo "Environment:"
@@ -67,17 +73,42 @@ if [ -z "$HOME" ]; then
     HOME=$(getent passwd "$(whoami)" | cut -d: -f6)
 fi
 
-# Check if there are staged changes
-if git diff --cached --quiet; then
-    echo "Error: No staged changes to commit" >&2
-    exit 1
-fi
+if [ "$AMEND" = true ]; then
+    # Amend mode: require an existing commit; staged changes are optional
+    # (no staged changes = pure reword). The message is generated from the
+    # whole resulting commit, so newly staged changes fold in naturally.
+    if ! git rev-parse --verify --quiet HEAD >/dev/null; then
+        echo "Error: --amend requires at least one commit" >&2
+        exit 1
+    fi
+    # Base for the amended commit's diff: parent if it exists, else the empty
+    # tree (amending the root commit). Computing it against the index yields
+    # the full content of the commit that --amend will produce.
+    if git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+        AMEND_BASE="HEAD~1"
+    else
+        AMEND_BASE=$(git hash-object -t tree /dev/null)
+    fi
+    DIFF_LABEL="Full changes in the amended commit:"
+    GIT_DIFF=$(git diff --cached "$AMEND_BASE")
+    GIT_NAME_STATUS=$(git diff --cached --name-status "$AMEND_BASE")
+    GIT_SHORTSTAT=$(git diff --cached --shortstat "$AMEND_BASE" 2>/dev/null || echo "")
+    # Style reference excludes the commit being reworded.
+    GIT_LOG=$(git log --oneline -5 "$AMEND_BASE" 2>/dev/null || echo "No previous commits")
+else
+    # Check if there are staged changes
+    if git diff --cached --quiet; then
+        echo "Error: No staged changes to commit" >&2
+        exit 1
+    fi
 
-# Get the git diff and recent commit messages for context
-GIT_DIFF=$(git diff --cached)
-GIT_NAME_STATUS=$(git diff --cached --name-status)
-GIT_SHORTSTAT=$(git diff --cached --shortstat 2>/dev/null || echo "")
-GIT_LOG=$(git log --oneline -5 2>/dev/null || echo "No previous commits")
+    # Get the git diff and recent commit messages for context
+    DIFF_LABEL="Staged changes to commit:"
+    GIT_DIFF=$(git diff --cached)
+    GIT_NAME_STATUS=$(git diff --cached --name-status)
+    GIT_SHORTSTAT=$(git diff --cached --shortstat 2>/dev/null || echo "")
+    GIT_LOG=$(git log --oneline -5 2>/dev/null || echo "No previous commits")
+fi
 
 # Create prompt file with proper escaping
 PROMPT_FILE="$(mktemp)"
@@ -190,7 +221,7 @@ Recent commits (for style reference):
 $GIT_LOG
 \`\`\`
 
-Staged changes to commit:
+$DIFF_LABEL
 \`\`\`diff
 $GIT_DIFF
 \`\`\`
@@ -422,7 +453,11 @@ PY
 
 # Output or commit
 if [ "$AUTO_COMMIT" = true ]; then
-    printf '%s\n' "$COMMIT_MSG" | git commit -F -
+    if [ "$AMEND" = true ]; then
+        printf '%s\n' "$COMMIT_MSG" | git commit --amend -F -
+    else
+        printf '%s\n' "$COMMIT_MSG" | git commit -F -
+    fi
 else
     printf '%s\n' "$COMMIT_MSG"
 fi

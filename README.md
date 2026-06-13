@@ -97,6 +97,7 @@ git-commit-ai -c                  # Generate and commit
 git-commit-ai -v                  # Add brief body
 git-commit-ai -vv                 # Add detailed body
 git-commit-ai PROJ-123            # Prepend JIRA ticket
+git-commit-ai --amend -c          # Regenerate last commit's message (folds in staged changes)
 git-commit-ai                     # Print message only
 ```
 
