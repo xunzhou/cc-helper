@@ -3,8 +3,10 @@ sessions, and recall a task's activity across repos."""
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 from . import producer, store
@@ -69,6 +71,25 @@ def cmd_recall(args) -> int:
     return 0
 
 
+def cmd_capture_hook(args) -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return 0
+    sid = payload.get("session_id")
+    if not sid:
+        return 0
+    tid = producer.resolve_task_id(dict(os.environ), payload.get("prompt"))
+    if not tid:
+        return 0
+    side = store.connect(args.db)
+    store.upsert_session(
+        side, content_session_id=sid, task_id=tid, project=payload.get("cwd"),
+        started_at_epoch=None,
+        source="env" if (os.environ.get("TASK_ID") or "").strip() else "extract")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="task-index")
     p.add_argument("--db", default=None, help="sidecar DB (default ~/.claude-mem-tasks.db)")
@@ -77,8 +98,10 @@ def main(argv=None) -> int:
     sub.add_parser("build", help="index claude-mem history into the sidecar")
     rc = sub.add_parser("recall", help="show a task's activity across repos")
     rc.add_argument("task_id")
+    sub.add_parser("capture-hook", help="record one session from CC hook JSON on stdin")
     args = p.parse_args(argv)
-    return {"build": cmd_build, "recall": cmd_recall}[args.cmd](args)
+    return {"build": cmd_build, "recall": cmd_recall,
+            "capture-hook": cmd_capture_hook}[args.cmd](args)
 
 
 if __name__ == "__main__":

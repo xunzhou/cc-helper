@@ -1,3 +1,5 @@
+import io
+import json
 import sqlite3
 
 from task_index import cli, store
@@ -45,3 +47,19 @@ def test_recall_unknown_task_is_graceful(tmp_path, capsys):
     mem = str(tmp_path / "mem.db"); side = str(tmp_path / "side.db"); _fake_mem(mem)
     assert cli.main(["--db", side, "--mem-db", mem, "recall", "NOPE-1"]) == 0
     assert "no sessions tagged NOPE-1" in capsys.readouterr().out
+
+
+def test_capture_hook_tags_session_from_stdin(tmp_path, monkeypatch):
+    side = str(tmp_path / "side.db")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"session_id": "csX", "cwd": "/data/proj/hq", "prompt": "work on AELDEV-1 now"})))
+    assert cli.main(["--db", side, "capture-hook"]) == 0
+    conn = store.connect(side)
+    rows = store.sessions_for_task(conn, "AELDEV-1")
+    assert [r["content_session_id"] for r in rows] == ["csX"]
+
+
+def test_capture_hook_ignores_bad_json(tmp_path, monkeypatch):
+    side = str(tmp_path / "side.db")
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert cli.main(["--db", side, "capture-hook"]) == 0
