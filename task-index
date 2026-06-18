@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# task-index — sidecar task index for claude-mem cross-repo recall.
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+exec env PYTHONPATH="$DIR" python3 -m task_index.cli "$@"
