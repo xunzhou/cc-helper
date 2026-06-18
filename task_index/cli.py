@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 from . import producer, store
@@ -20,7 +21,11 @@ def mem_db_path() -> str:
 
 
 def _mem_connect(path: str | None = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path or mem_db_path()}?mode=ro", uri=True)
+    resolved = path or mem_db_path()
+    try:
+        conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+    except sqlite3.OperationalError as e:
+        raise SystemExit(f"task-index: cannot open claude-mem DB (read-only) at {resolved!r}: {e}")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -29,6 +34,9 @@ def cmd_build(args) -> int:
     mem = _mem_connect(args.mem_db)
     side = store.connect(args.db)
     n = 0
+    # Re-runs are idempotent (upsert by content_session_id) ONLY while the
+    # producer stays pure: changing extractor rules would rewrite extract-sourced
+    # rows on the next build. env-sourced rows are protected by the upsert WHERE.
     for row in mem.execute(
             "SELECT content_session_id, project, user_prompt, started_at_epoch "
             "FROM sdk_sessions WHERE content_session_id IS NOT NULL"):
@@ -46,28 +54,38 @@ def cmd_build(args) -> int:
 
 def cmd_recall(args) -> int:
     side = store.connect(args.db)
-    ids = [r["content_session_id"] for r in store.sessions_for_task(side, args.task_id)]
-    if not ids:
+    sessions = store.sessions_for_task(side, args.task_id)
+    if not sessions:
         print(f"no sessions tagged {args.task_id}")
         return 0
+    ids = [r["content_session_id"] for r in sessions]
     mem = _mem_connect(args.mem_db)
     placeholders = ",".join("?" * len(ids))
-    rows = mem.execute(
-        f"""SELECT s.project AS project, o.created_at_epoch AS ts,
+    activity = mem.execute(
+        f"""SELECT s.content_session_id AS sid, o.created_at_epoch AS ts,
                    o.type AS type, o.title AS title
             FROM sdk_sessions s JOIN observations o
               ON o.memory_session_id = s.memory_session_id
             WHERE s.content_session_id IN ({placeholders})
-            ORDER BY s.project, o.created_at_epoch""", ids).fetchall()
-    repos = sorted({r["project"] for r in rows})
-    print(f"task {args.task_id} — {len(ids)} session(s) across {len(repos)} repo(s): "
+            ORDER BY o.created_at_epoch""", ids).fetchall()
+    by_session = defaultdict(list)
+    for a in activity:
+        by_session[a["sid"]].append(a)
+    by_repo = defaultdict(list)
+    for r in sessions:
+        by_repo[r["project"] or "(unknown)"].append(r)
+    repos = sorted(by_repo)
+    print(f"task {args.task_id} — {len(sessions)} session(s) across {len(repos)} repo(s): "
           f"{', '.join(repos)}")
-    current = None
-    for r in rows:
-        if r["project"] != current:
-            current = r["project"]
-            print(f"\n## {current}")
-        print(f"  [{r['type']}] {r['title']}")
+    for repo in repos:
+        print(f"\n## {repo}")
+        for sess in by_repo[repo]:
+            acts = by_session.get(sess["content_session_id"], [])
+            if acts:
+                for a in acts:
+                    print(f"  [{a['type']}] {a['title']}")
+            else:
+                print(f"  (session {sess['content_session_id'][:8]} — no observations indexed)")
     return 0
 
 

@@ -63,3 +63,28 @@ def test_capture_hook_ignores_bad_json(tmp_path, monkeypatch):
     side = str(tmp_path / "side.db")
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert cli.main(["--db", side, "capture-hook"]) == 0
+
+
+def test_recall_shows_sessions_with_no_observations(tmp_path, capsys):
+    import sqlite3
+    mem = str(tmp_path / "mem.db"); side = str(tmp_path / "side.db"); _fake_mem(mem)
+    c = sqlite3.connect(mem)
+    c.execute("INSERT INTO sdk_sessions VALUES ('cs4','ms4','i3-cc','work on SASSC-6260 more',40)")
+    c.commit(); c.close()
+    cli.main(["--db", side, "--mem-db", mem, "build"])
+    cli.main(["--db", side, "--mem-db", mem, "recall", "SASSC-6260"])
+    out = capsys.readouterr().out
+    assert "3 session(s) across 3 repo(s)" in out
+    assert "i3-cc" in out
+    assert "no observations indexed" in out
+
+
+def test_capture_hook_env_source(tmp_path, monkeypatch):
+    side = str(tmp_path / "side.db")
+    monkeypatch.setenv("TASK_ID", "EXPLICIT-9")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"session_id": "csE", "cwd": "/data/proj/hq", "prompt": "anything at all here"})))
+    assert cli.main(["--db", side, "capture-hook"]) == 0
+    conn = store.connect(side)
+    rows = store.sessions_for_task(conn, "EXPLICIT-9")
+    assert len(rows) == 1 and rows[0]["source"] == "env"
