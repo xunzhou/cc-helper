@@ -42,14 +42,43 @@ def cmd_build(args) -> int:
     return 0
 
 
+def cmd_recall(args) -> int:
+    side = store.connect(args.db)
+    ids = [r["content_session_id"] for r in store.sessions_for_task(side, args.task_id)]
+    if not ids:
+        print(f"no sessions tagged {args.task_id}")
+        return 0
+    mem = _mem_connect(args.mem_db)
+    placeholders = ",".join("?" * len(ids))
+    rows = mem.execute(
+        f"""SELECT s.project AS project, o.created_at_epoch AS ts,
+                   o.type AS type, o.title AS title
+            FROM sdk_sessions s JOIN observations o
+              ON o.memory_session_id = s.memory_session_id
+            WHERE s.content_session_id IN ({placeholders})
+            ORDER BY s.project, o.created_at_epoch""", ids).fetchall()
+    repos = sorted({r["project"] for r in rows})
+    print(f"task {args.task_id} — {len(ids)} session(s) across {len(repos)} repo(s): "
+          f"{', '.join(repos)}")
+    current = None
+    for r in rows:
+        if r["project"] != current:
+            current = r["project"]
+            print(f"\n## {current}")
+        print(f"  [{r['type']}] {r['title']}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="task-index")
     p.add_argument("--db", default=None, help="sidecar DB (default ~/.claude-mem-tasks.db)")
     p.add_argument("--mem-db", default=None, help="claude-mem DB (opened read-only)")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("build", help="index claude-mem history into the sidecar")
+    rc = sub.add_parser("recall", help="show a task's activity across repos")
+    rc.add_argument("task_id")
     args = p.parse_args(argv)
-    return {"build": cmd_build}[args.cmd](args)
+    return {"build": cmd_build, "recall": cmd_recall}[args.cmd](args)
 
 
 if __name__ == "__main__":

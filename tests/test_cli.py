@@ -29,3 +29,19 @@ def test_build_indexes_work_sessions_only(tmp_path):
     conn = store.connect(side)
     rows = store.sessions_for_task(conn, "SASSC-6260")
     assert [r["content_session_id"] for r in rows] == ["cs1", "cs2"]  # cs3 automation skipped
+
+
+def test_recall_groups_activity_by_repo(tmp_path, capsys):
+    mem = str(tmp_path / "mem.db"); side = str(tmp_path / "side.db"); _fake_mem(mem)
+    cli.main(["--db", side, "--mem-db", mem, "build"])
+    assert cli.main(["--db", side, "--mem-db", mem, "recall", "SASSC-6260"]) == 0
+    out = capsys.readouterr().out
+    assert "2 session(s) across 2 repo(s)" in out
+    assert "cc-matrix" in out and "desktop-workflow" in out
+    assert "did the thing" in out
+
+
+def test_recall_unknown_task_is_graceful(tmp_path, capsys):
+    mem = str(tmp_path / "mem.db"); side = str(tmp_path / "side.db"); _fake_mem(mem)
+    assert cli.main(["--db", side, "--mem-db", mem, "recall", "NOPE-1"]) == 0
+    assert "no sessions tagged NOPE-1" in capsys.readouterr().out
