@@ -51,12 +51,28 @@ def test_recall_unknown_task_is_graceful(tmp_path, capsys):
 
 def test_capture_hook_tags_session_from_stdin(tmp_path, monkeypatch):
     side = str(tmp_path / "side.db")
+    # Exercise the prompt-extraction path: an ambient $TASK_ID (set when this
+    # suite runs inside a fleet-dispatched, task-bound session) would otherwise
+    # win and clobber the extracted id. Clear it so the test is hermetic.
+    monkeypatch.delenv("TASK_ID", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
         {"session_id": "csX", "cwd": "/data/proj/hq", "prompt": "work on AELDEV-1 now"})))
     assert cli.main(["--db", side, "capture-hook"]) == 0
     conn = store.connect(side)
     rows = store.sessions_for_task(conn, "AELDEV-1")
     assert [r["content_session_id"] for r in rows] == ["csX"]
+
+
+def test_capture_hook_env_task_id_wins_over_prompt(tmp_path, monkeypatch):
+    side = str(tmp_path / "side.db")
+    # Explicit $TASK_ID is authoritative and overrides the prompt extractor.
+    monkeypatch.setenv("TASK_ID", "ENV-99")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"session_id": "csE", "cwd": "/data/proj/hq", "prompt": "work on AELDEV-1 now"})))
+    assert cli.main(["--db", side, "capture-hook"]) == 0
+    conn = store.connect(side)
+    assert [r["content_session_id"] for r in store.sessions_for_task(conn, "ENV-99")] == ["csE"]
+    assert store.sessions_for_task(conn, "AELDEV-1") == []
 
 
 def test_capture_hook_ignores_bad_json(tmp_path, monkeypatch):
