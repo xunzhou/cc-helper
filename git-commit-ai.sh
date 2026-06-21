@@ -232,12 +232,20 @@ TEMPLATE
 # Determine LLM command based on template
 case "$LLM_CMD_TEMPLATE" in
     claude)
-        # Tag this headless run via CLAUDE_CODE_ENTRYPOINT so the desktop-workflow
-        # session explorer can filter it out by a stable field (entrypoint) rather
-        # than matching the prompt text. The assignment is inline in the command so
-        # it survives the `bash -lc` login-shell sourcing below. Claude stamps the
-        # value onto every transcript line.
-        LLM_CMD='CLAUDE_CODE_ENTRYPOINT=git-commit-ai claude --print --tools "" --dangerously-skip-permissions'
+        # Isolate this headless commit-gen run from the user's Claude config so it
+        # neither pollutes memory/history nor gets polluted by it:
+        #   --setting-sources project,local : skip the USER settings.json, so none
+        #       of the user-level hooks (desktop-workflow capture, vikunja) or
+        #       plugins (claude-mem, honcho, superpowers) load. That stops these
+        #       runs from being recorded as sessions/observations AND stops the
+        #       memory dump + skills from being injected into the commit prompt.
+        #       Auth is untouched (unlike --bare, which forces ANTHROPIC_API_KEY/
+        #       apiKeyHelper and never reads OAuth/keychain -> would break login here).
+        #   --no-session-persistence : don't write a transcript .jsonl under
+        #       ~/.claude/projects (no on-disk chat history for this run).
+        # CLAUDE_CODE_ENTRYPOINT is kept as a stable marker (belt-and-suspenders if
+        # ever run without the flags above); inline so it survives `bash -lc`.
+        LLM_CMD='CLAUDE_CODE_ENTRYPOINT=git-commit-ai claude --print --setting-sources project,local --no-session-persistence --tools "" --dangerously-skip-permissions'
         ;;
     opencode)
         LLM_CMD='opencode run --format default "Follow the attached prompt file exactly. Output ONLY the JSON object requested." --file "$GIT_COMMIT_AI_PROMPT_FILE"'
