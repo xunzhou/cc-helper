@@ -90,16 +90,43 @@ Requirements: [uv](https://docs.astral.sh/uv/) — deps declared inline (PEP 723
 
 ### git-commit-ai
 
-AI-powered conventional commit message generator.
+Conventional commit message generator with a deterministic house-style enforcer
+in the core (conventional subject, no AI attribution, no emoji, JIRA prefix). It
+serves both humans and agents — the message *source* is pluggable, the *policy* is
+not.
 
 ```bash
-git-commit-ai -c                  # Generate and commit
-git-commit-ai -v                  # Add brief body
-git-commit-ai -vv                 # Add detailed body
-git-commit-ai PROJ-123            # Prepend JIRA ticket
-git-commit-ai --amend -c          # Regenerate last commit's message (folds in staged changes)
-git-commit-ai                     # Print message only
+git-commit-ai -c                  # Generate from the diff and commit (human default)
+git-commit-ai -v / -vv            # ...with a brief / detailed body
+git-commit-ai PROJ-123            # Prepend a JIRA ticket
+git-commit-ai --amend -c          # Reword the last commit (folds in staged changes)
+git-commit-ai                     # Print message only (no commit)
 ```
+
+Agent-facing (the staged diff is still what gets committed):
+
+```bash
+# The agent already knows the WHY -> it authors; the wrapper enforces + commits.
+# No second LLM call; the agent's body is kept verbatim.
+git-commit-ai -c -m "fix(api): guard nil token refresh
+
+- root cause: race between refresh and revoke
+- mutex over retry to avoid token churn"
+
+git-commit-ai -c --stdin <<<"$msg"   # same, message on stdin
+
+# The agent has the WHY but wants help phrasing -> inject intent, LLM writes.
+git-commit-ai -c -v --context "race between refresh and revoke; mutex avoids churn"
+
+# Structured output for programmatic consumers (versioned contract, v1).
+git-commit-ai --json -m "fix(x): y"
+# {"version":1,"subject":"fix(x): y","body":"","bullets":[],
+#  "breaking_change":"","message":"fix(x): y","committed":false,"commit":null}
+```
+
+`-m`/`--stdin` (author) and `--context` (generate) are mutually exclusive.
+Exit codes: `0` ok · `1` usage/env error · `2` message unusable · `124` LLM timeout.
+Run `git-commit-ai --help` for the full surface. Tests: `bash tests/test_git_commit_ai.sh`.
 
 <details>
 <summary>Setup</summary>
@@ -109,6 +136,6 @@ chmod +x git-commit-ai.sh
 cp git-commit-ai.sh ~/.local/bin/git-commit-ai
 ```
 
-Requirements: bash, git, claude CLI
+Requirements: bash, git, python3; claude CLI (only for generate modes — `-m` needs neither)
 </details>
 

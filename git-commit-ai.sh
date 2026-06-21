@@ -20,6 +20,10 @@ VERBOSE_LEVEL=0
 JIRA_TICKET=""
 AUTO_COMMIT=false
 AMEND=false
+OUTPUT_JSON=false
+AUTHOR_MODE=false   # agent supplied the final message; enforce-only, no LLM call
+AGENT_MESSAGE=""    # the author-supplied draft (-m / --message-file / --stdin)
+AGENT_CONTEXT=""    # the author-supplied WHY injected into generation (--context)
 LLM_TIMEOUT_SECONDS="${GIT_COMMIT_AI_TIMEOUT_SECONDS:-30}"
 LLM_CMD_TEMPLATE="${GIT_COMMIT_AI_LLM_CMD:-claude}"
 
@@ -41,24 +45,94 @@ while [[ $# -gt 0 ]]; do
             AMEND=true
             shift
             ;;
+        -m|--message)
+            # Author mode: agent supplies the final message; wrapper enforces + commits, no LLM.
+            AUTHOR_MODE=true
+            [ $# -ge 2 ] || { echo "Error: -m/--message requires a value (use - for stdin)" >&2; exit 1; }
+            if [ "$2" = "-" ]; then AGENT_MESSAGE="$(cat)"; else AGENT_MESSAGE="$2"; fi
+            shift 2
+            ;;
+        --message-file)
+            AUTHOR_MODE=true
+            [ $# -ge 2 ] || { echo "Error: --message-file requires a path (use - for stdin)" >&2; exit 1; }
+            if [ "$2" = "-" ]; then AGENT_MESSAGE="$(cat)"; else AGENT_MESSAGE="$(cat -- "$2")"; fi
+            shift 2
+            ;;
+        --stdin)
+            AUTHOR_MODE=true
+            AGENT_MESSAGE="$(cat)"
+            shift
+            ;;
+        --context)
+            # Generate mode: agent supplies the WHY; the LLM writes the message using diff + this.
+            [ $# -ge 2 ] || { echo "Error: --context requires a value (use --context-file - for stdin)" >&2; exit 1; }
+            if [ -n "$AGENT_CONTEXT" ]; then AGENT_CONTEXT="$AGENT_CONTEXT
+$2"; else AGENT_CONTEXT="$2"; fi
+            shift 2
+            ;;
+        --context-file)
+            [ $# -ge 2 ] || { echo "Error: --context-file requires a path (use - for stdin)" >&2; exit 1; }
+            if [ "$2" = "-" ]; then _ctx="$(cat)"; else _ctx="$(cat -- "$2")"; fi
+            if [ -n "$AGENT_CONTEXT" ]; then AGENT_CONTEXT="$AGENT_CONTEXT
+$_ctx"; else AGENT_CONTEXT="$_ctx"; fi
+            shift 2
+            ;;
+        --json)
+            OUTPUT_JSON=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: git-commit-ai [-v|-vv] [-c] [--amend] [JIRA-TICKET]"
-            echo ""
-            echo "Options:"
-            echo "  -v, --verbose       Add brief body (1-3 bullets)"
-            echo "  -vv,--very-verbose  Add detailed body (3-5 bullets)"
-            echo "  -c, --commit     Automatically commit with generated message"
-            echo "  --amend          Regenerate the last commit's message (folds in staged changes)"
-            echo "  -h, --help       Show this help message"
-            echo ""
-            echo "Environment:"
-            echo "  GIT_COMMIT_AI_LLM_CMD              LLM runner: claude (default), opencode, or a custom command."
-            echo "                                    Prompt is provided via stdin unless your command references __PROMPT_FILE__ or GIT_COMMIT_AI_PROMPT_FILE."
-            echo "  GIT_COMMIT_AI_TIMEOUT_SECONDS      LLM timeout in seconds (default: 30)"
-            echo "  GIT_COMMIT_AI_LLM_USE_STDIN        Force stdin usage: auto (default), false"
-            echo ""
-            echo "Arguments:"
-            echo "  JIRA-TICKET      Optional JIRA ticket ID to prepend (e.g., PROJ-123)"
+            cat <<'HELP'
+Usage: git-commit-ai [-v|-vv] [-c] [--amend] [--json] [-m MSG|--stdin|--context WHY] [JIRA-TICKET]
+
+Three ways to get a message (the staged diff is always the subject of the commit):
+
+  1. Generate from the diff (human / no-context default)
+       git-commit-ai -c
+     The LLM writes the message from the staged diff. -v/-vv add a body, but it
+     can only restate the diff (it has no access to the WHY).
+
+  2. Generate with author intent (agent has the WHY but wants help phrasing)
+       git-commit-ai -c -v --context "race between refresh and revoke; mutex avoids churn"
+     The WHY is injected into the prompt; the LLM composes from diff + intent.
+
+  3. Author + enforce (agent already wrote the message; NO second LLM call)
+       git-commit-ai -c -m "fix(api): guard nil token refresh
+
+       - root cause: race between refresh and revoke
+       - mutex over retry to avoid token churn"
+     The wrapper validates conventional style, strips AI attribution + emoji,
+     applies the JIRA prefix, and commits. The agent's body is kept verbatim.
+
+Options:
+  -v, --verbose        Add brief body (1-3 bullets)            [generate modes]
+  -vv,--very-verbose   Add detailed body (3-5 bullets)         [generate modes]
+  -c, --commit         Commit with the resulting message
+  --amend              Reword the last commit (folds in staged changes)
+  -m, --message MSG    Author mode: use MSG as the message (- = read stdin)
+  --message-file FILE  Author mode: read the message from FILE (- = stdin)
+  --stdin              Author mode: read the message from stdin
+  --context WHY        Generate mode: inject author intent (repeatable)
+  --context-file FILE  Generate mode: read intent from FILE (- = stdin)
+  --json               Emit a JSON object on stdout (versioned contract, v1):
+                       {version, subject, body, bullets, breaking_change,
+                        message, committed, commit}
+  -h, --help           Show this help message
+
+Exit codes:  0 ok  |  1 usage/environment error  |  2 message unusable
+             (no conventional subject)  |  124 LLM timed out
+
+Note: --message/--stdin (author) and --context (generate) are mutually exclusive.
+
+Environment:
+  GIT_COMMIT_AI_LLM_CMD            LLM runner: claude (default), opencode, or a custom command.
+                                  Prompt is provided via stdin unless your command references __PROMPT_FILE__ or GIT_COMMIT_AI_PROMPT_FILE.
+  GIT_COMMIT_AI_TIMEOUT_SECONDS    LLM timeout in seconds (default: 30)
+  GIT_COMMIT_AI_LLM_USE_STDIN      Force stdin usage: auto (default), false
+
+Arguments:
+  JIRA-TICKET      Optional JIRA ticket ID to prepend (e.g., PROJ-123)
+HELP
             exit 0
             ;;
         *)
@@ -67,6 +141,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Author mode (final message supplied) and --context (intent for generation) are
+# mutually exclusive: one bypasses the LLM, the other feeds it. Fail visibly.
+if [ "$AUTHOR_MODE" = true ] && [ -n "$AGENT_CONTEXT" ]; then
+    echo "Error: --message/--stdin (author mode) cannot be combined with --context (generate mode)" >&2
+    exit 1
+fi
 
 # Ensure HOME is set (lazygit might not set it)
 if [ -z "$HOME" ]; then
@@ -108,6 +189,29 @@ else
     GIT_NAME_STATUS=$(git diff --cached --name-status)
     GIT_SHORTSTAT=$(git diff --cached --shortstat 2>/dev/null || echo "")
     GIT_LOG=$(git log --oneline -5 2>/dev/null || echo "No previous commits")
+fi
+
+# --- Obtain the raw message ------------------------------------------------
+# Author mode: the agent already wrote the message -> skip the LLM entirely (no
+# second model call, no diff re-derivation). Generate mode: build the prompt and
+# call the LLM, optionally injecting author intent (--context) as the WHY.
+if [ "$AUTHOR_MODE" = true ]; then
+    MESSAGE_MODE="author"
+    LLM_RAW="$AGENT_MESSAGE"
+else
+MESSAGE_MODE="generate"
+
+# Optional author-intent block, injected into the prompt as the authoritative WHY.
+AGENT_CONTEXT_BLOCK=""
+if [ -n "$AGENT_CONTEXT" ]; then
+    AGENT_CONTEXT_BLOCK="## Author-Supplied Intent (AUTHORITATIVE - the WHY)
+
+The commit author provided this rationale. Treat it as the primary source of intent:
+use it to pick the type/scope and, when a body is requested, to convey the WHY rather
+than restating the diff. Do not contradict it.
+
+$AGENT_CONTEXT
+"
 fi
 
 # Create prompt file with proper escaping
@@ -226,6 +330,7 @@ $DIFF_LABEL
 $GIT_DIFF
 \`\`\`
 
+$AGENT_CONTEXT_BLOCK
 Now generate ONLY the JSON object (no explanations, no markdown blocks, just the raw JSON):
 TEMPLATE
 
@@ -287,10 +392,14 @@ else
     echo "$LLM_RAW" >&2
     exit 1
 fi
+fi  # end generate-mode branch (author mode set LLM_RAW directly)
 
-COMMIT_MSG=$(
+# Enforce house style in the core and emit ONE canonical JSON object. Both surfaces
+# (plain message and --json) are rendered from it by the shell below.
+RESULT_JSON=$(
     env \
         LLM_RAW="$LLM_RAW" \
+        MESSAGE_MODE="$MESSAGE_MODE" \
         GIT_NAME_STATUS="$GIT_NAME_STATUS" \
         GIT_SHORTSTAT="$GIT_SHORTSTAT" \
         python3 - "$VERBOSE_LEVEL" "$JIRA_TICKET" <<'PY'
@@ -301,6 +410,7 @@ import sys
 
 verbose_level = int(sys.argv[1])
 jira_ticket = sys.argv[2]
+message_mode = os.environ.get("MESSAGE_MODE", "generate")
 raw = os.environ.get("LLM_RAW")
 if raw is None:
     raw = sys.stdin.read()
@@ -310,6 +420,27 @@ git_shortstat = os.environ.get("GIT_SHORTSTAT", "")
 
 decoder = json.JSONDecoder()
 CONVENTIONAL_PATTERN = re.compile(r"^(?:revert: )?[a-z]+(?:\([^)]+\))?!?: .+")
+
+# House-style policy lives in the core so every surface (and every input source)
+# inherits it: strip AI-attribution / promo lines and emoji per the commit
+# convention. Emoji are removed first, so a "<emoji> Generated with ..." promo
+# line still matches the attribution filter afterward.
+ATTRIB_LINE_RE = re.compile(r"^\s*(co-authored-by:|generated with\b|signed-off-by:\s*claude)", re.IGNORECASE)
+EMOJI_RE = re.compile(
+    "[\U0001f300-\U0001faff\U00002600-\U000026ff\U00002700-\U000027bf"
+    "\U0001f1e6-\U0001f1ff\U0000fe0f\U000020e3\U00002b00-\U00002bff]"
+)
+
+
+def clean_text(s: str) -> str:
+    s = EMOJI_RE.sub("", s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.rstrip()
+
+
+def strip_attrib(lines):
+    return [ln for ln in lines if not ATTRIB_LINE_RE.match(ln)]
+
 
 def extract_first_json_object(text: str):
     for match in re.finditer(r"\{", text):
@@ -322,57 +453,87 @@ def extract_first_json_object(text: str):
             continue
     return None
 
-def find_subject_line(text: str) -> tuple[str, list[str]]:
+
+def find_subject_line(text: str):
     lines = [ln.rstrip() for ln in text.splitlines()]
     for i, ln in enumerate(lines):
         if CONVENTIONAL_PATTERN.match(ln.strip()):
             return ln.strip(), lines[i + 1 :]
     return "", []
 
-def enforce_from_plain_text(text: str) -> str:
-    subject, body_lines = find_subject_line(text)
-    if not subject:
-        raise ValueError("LLM output did not contain a conventional commit subject line")
-    body_lines = [ln.rstrip() for ln in body_lines]
 
-    breaking_lines = [ln.strip() for ln in body_lines if ln.strip().startswith("BREAKING CHANGE:")]
-
-    bullet_lines: list[str] = []
+def bullets_from(body_lines):
+    out = []
     for ln in body_lines:
         s = ln.strip()
-        if s.startswith("- "):
-            bullet_lines.append(s[2:].strip())
-        elif s.startswith("* "):
-            bullet_lines.append(s[2:].strip())
+        if s.startswith("- ") or s.startswith("* "):
+            out.append(s[2:].strip())
+    return out
 
-    if verbose_level == 0:
-        parts = [subject] if subject else []
-        if breaking_lines:
-            parts.append("")
-            parts.extend(breaking_lines)
-        return "\n".join(parts).rstrip() + "\n"
 
-    max_bullets = 3 if verbose_level == 1 else 5
+def trim_blanks(lines):
+    lines = list(lines)
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
 
-    if not bullet_lines:
-        fallback = [ln.strip() for ln in body_lines if ln.strip() and not ln.strip().startswith("BREAKING CHANGE:")]
-        bullet_lines = fallback[:max_bullets]
+
+def emit(subject, body_text, bullets, breaking):
+    """Assemble the canonical result object and print it as JSON, then exit."""
+    subject = clean_text(subject)
+    if jira_ticket:
+        subject = f"[{jira_ticket}] {subject}"
+    message = subject if not body_text else subject + "\n\n" + body_text
+    result = {
+        "version": 1,
+        "subject": subject,
+        "body": body_text,
+        "bullets": bullets,
+        "breaking_change": breaking,
+        "message": message,
+    }
+    sys.stdout.write(json.dumps(result) + "\n")
+    sys.exit(0)
+
+
+def fail(msg):
+    print(f"Error: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def extract_breaking(body_lines):
+    for ln in body_lines:
+        s = ln.strip()
+        if s.startswith("BREAKING CHANGE:"):
+            return s[len("BREAKING CHANGE:") :].strip()
+    return ""
+
+
+def run_author():
+    """The agent's message is authoritative: enforce policy, keep the body verbatim."""
+    obj = extract_first_json_object(raw)
+    if obj and str(obj.get("subject", "")).strip():
+        subject = str(obj.get("subject", "")).strip()
+        bullets = [clean_text(str(b).strip()) for b in (obj.get("bullets") or []) if str(b).strip()]
+        breaking = str(obj.get("breaking_change", "")).strip()
+        body_lines = []
+        if breaking:
+            body_lines.append(f"BREAKING CHANGE: {breaking}")
+        body_lines += [f"- {b}" for b in bullets]
     else:
-        bullet_lines = bullet_lines[:max_bullets]
+        subject, rest = find_subject_line(raw)
+        if not subject:
+            fail("author message has no conventional commit subject line (e.g. 'fix(scope): summary')")
+        body_lines = trim_blanks(strip_attrib([clean_text(ln) for ln in rest]))
+        bullets = bullets_from(body_lines)
+        breaking = extract_breaking(body_lines)
+    emit(subject, "\n".join(body_lines).rstrip(), bullets, breaking)
 
-    parts = [subject] if subject else []
-    body: list[str] = []
-    if breaking_lines:
-        body.extend(breaking_lines)
-    body.extend([f"- {b}" for b in bullet_lines])
-    if body:
-        parts.append("")
-        parts.extend(body)
-    return "\n".join(parts).rstrip() + "\n"
 
-def synthesize_bullets(min_bullets: int, max_bullets: int) -> list[str]:
-    bullets: list[str] = []
-
+def synthesize_bullets(min_bullets: int, max_bullets: int):
+    bullets = []
     status_map = {"A": "Add", "M": "Update", "D": "Delete", "R": "Rename", "C": "Copy"}
     for line in git_name_status.splitlines():
         line = line.strip()
@@ -385,87 +546,96 @@ def synthesize_bullets(min_bullets: int, max_bullets: int) -> list[str]:
             bullets.append(f"{action} {parts[1]} -> {parts[2]}")
         elif len(parts) >= 2:
             bullets.append(f"{action} {parts[1]}")
-
     bullets = [b.rstrip(".") for b in bullets if b]
-
     if git_shortstat.strip():
         bullets.append(git_shortstat.strip().rstrip("."))
-
     if not bullets:
         bullets.append("Update staged changes")
-
     bullets = bullets[:max_bullets]
     if len(bullets) < min_bullets:
         bullets.extend(["Update staged changes"] * (min_bullets - len(bullets)))
         bullets = bullets[:max_bullets]
-
     return bullets
 
-obj = extract_first_json_object(raw)
-if not obj:
-    try:
-        sys.stdout.write(enforce_from_plain_text(raw))
-        sys.exit(0)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(2)
 
-subject = str(obj.get("subject", "")).strip()
-bullets = obj.get("bullets", [])
-breaking_change = str(obj.get("breaking_change", "")).strip()
+def generate_from_plain():
+    subject, body_lines = find_subject_line(raw)
+    if not subject:
+        fail("LLM output did not contain a conventional commit subject line")
+    body_lines = strip_attrib([clean_text(ln) for ln in body_lines])
+    breaking = extract_breaking(body_lines)
+    breaking_out = [f"BREAKING CHANGE: {breaking}"] if breaking else []
+    if verbose_level == 0:
+        emit(subject, "\n".join(breaking_out).rstrip(), [], breaking)
+    max_bullets = 3 if verbose_level == 1 else 5
+    bullets = bullets_from(body_lines)
+    if not bullets:
+        bullets = [ln.strip() for ln in body_lines if ln.strip() and not ln.strip().startswith("BREAKING CHANGE:")][:max_bullets]
+    else:
+        bullets = bullets[:max_bullets]
+    body_out = breaking_out + [f"- {b}" for b in bullets]
+    emit(subject, "\n".join(body_out).rstrip(), bullets, breaking)
 
-if not subject:
-    try:
-        sys.stdout.write(enforce_from_plain_text(raw))
-        sys.exit(0)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(2)
 
-if not isinstance(bullets, list):
-    bullets = []
-bullets = [str(b).strip() for b in bullets if str(b).strip()]
-bullets = [b.rstrip(".") for b in bullets if b]
+def run_generate():
+    obj = extract_first_json_object(raw)
+    if not obj or not str(obj.get("subject", "")).strip():
+        generate_from_plain()
+        return
+    subject = str(obj.get("subject", "")).strip()
+    breaking = str(obj.get("breaking_change", "")).strip()
+    bullets = obj.get("bullets", [])
+    if not isinstance(bullets, list):
+        bullets = []
+    bullets = [clean_text(str(b).strip()).rstrip(".") for b in bullets if str(b).strip()]
+    bullets = [b for b in bullets if b]
+    breaking_out = [f"BREAKING CHANGE: {breaking}"] if breaking else []
 
-if jira_ticket:
-    subject = f"[{jira_ticket}] {subject}"
+    if verbose_level == 0:
+        emit(subject, "\n".join(breaking_out).rstrip(), [], breaking)
 
-if verbose_level == 0:
-    lines = [subject] if subject else []
-    if breaking_change:
-        lines.extend(["", f"BREAKING CHANGE: {breaking_change}"])
-    sys.stdout.write("\n".join(lines).rstrip() + "\n")
-    sys.exit(0)
+    max_bullets = 3 if verbose_level == 1 else 5
+    min_bullets = 1 if verbose_level == 1 else 3
+    bullets = bullets[:max_bullets]
+    if len(bullets) < min_bullets:
+        bullets = synthesize_bullets(min_bullets, max_bullets)
+    body_out = breaking_out + [f"- {b}" for b in bullets]
+    emit(subject, "\n".join(body_out).rstrip(), bullets, breaking)
 
-max_bullets = 3 if verbose_level == 1 else 5
-min_bullets = 1 if verbose_level == 1 else 3
 
-bullets = bullets[:max_bullets]
-if len(bullets) < min_bullets:
-    bullets = synthesize_bullets(min_bullets=min_bullets, max_bullets=max_bullets)
-
-lines = [subject] if subject else []
-body_lines: list[str] = []
-if breaking_change:
-    body_lines.append(f"BREAKING CHANGE: {breaking_change}")
-if bullets:
-    body_lines.extend([f"- {b}" for b in bullets])
-
-if body_lines:
-    lines.append("")
-    lines.extend(body_lines)
-
-sys.stdout.write("\n".join(lines).rstrip() + "\n")
+if message_mode == "author":
+    run_author()
+else:
+    run_generate()
 PY
 )
 
-# Output or commit
+# Derive the plain commit message from the canonical object.
+COMMIT_MSG=$(printf '%s' "$RESULT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["message"])')
+
+# Commit if requested. Git's own chatter goes to stderr so stdout stays pure data
+# (a clean message in print mode, or a clean JSON object under --json).
+COMMITTED=false
+COMMIT_SHA=""
 if [ "$AUTO_COMMIT" = true ]; then
     if [ "$AMEND" = true ]; then
-        printf '%s\n' "$COMMIT_MSG" | git commit --amend -F -
+        printf '%s\n' "$COMMIT_MSG" | git commit --amend -F - >&2
     else
-        printf '%s\n' "$COMMIT_MSG" | git commit -F -
+        printf '%s\n' "$COMMIT_MSG" | git commit -F - >&2
     fi
+    COMMITTED=true
+    COMMIT_SHA=$(git rev-parse HEAD)
+fi
+
+# Render the requested surface.
+if [ "$OUTPUT_JSON" = true ]; then
+    env RJSON="$RESULT_JSON" COMMITTED="$COMMITTED" COMMIT_SHA="$COMMIT_SHA" python3 -c '
+import json, os, sys
+o = json.loads(os.environ["RJSON"])
+o["committed"] = os.environ["COMMITTED"] == "true"
+o["commit"] = os.environ["COMMIT_SHA"] or None
+print(json.dumps(o))
+'
 else
     printf '%s\n' "$COMMIT_MSG"
 fi
