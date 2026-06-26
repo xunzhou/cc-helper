@@ -10,7 +10,7 @@
 - **Purpose:** Claude Code helper scripts
 - **Languages:** Python, Shell
 - **Size:** <25 tracked files
-- **Status (latest):** feat(git-commit-ai): add agent message sources (-m, --context, --json)
+- **Status (latest):** docs(brief): add generated repo map for fresh agents
 
 ## Build & test
 - _no build/test manifest detected — check README_
@@ -20,7 +20,10 @@
 - `tests/`
 
 ## Further reading
-- `README.md`
+- `README.md` · `CLAUDE.md`
+
+## Fleet tooling
+- The hq fleet CLIs are on `PATH` from any repo — `vik` `cand` `verify-gate` `fleet-rank` `fleet-contract` `advancer`. **Read `/data/proj/hq/tools/CLI-REFERENCE.md` before invoking; do not probe `<tool> --help`/`-h`/no-args** (usage dumps are session noise). `cand`/`vik` also have the `decompose-and-park` / `vikunja` skills.
 
 <!-- BEGIN HAND-WRITTEN (preserved across regen) -->
 
