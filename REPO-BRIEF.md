@@ -10,7 +10,7 @@
 - **Purpose:** Claude Code helper scripts
 - **Languages:** Python, Shell
 - **Size:** <25 tracked files
-- **Status (latest):** docs(brief): add generated repo map for fresh agents
+- **Status (latest):** feat(git-commit-ai): add agent message sources (-m, --context, --json)
 
 ## Build & test
 - _no build/test manifest detected — check README_
