@@ -131,6 +131,38 @@ get_context_window() {
     echo "${percentage}% ${token_display}/$(format_token_count "$limit")"
 }
 
+# Context-handoff state from context% — the escalating cue for "switch to a fresh
+# session before response quality degrades". ok < amber(50) < red(65) < degraded(80).
+# Thresholds are percent of the effective context limit; override via env.
+# "init" means no usage yet (nothing to publish on).
+handoff_state() {
+    local pct="$1"
+    [[ -z "$pct" ]] && { echo init; return; }
+    local amber="${CC_HANDOFF_AMBER_PCT:-50}"
+    local red="${CC_HANDOFF_RED_PCT:-65}"
+    local degraded="${CC_HANDOFF_DEGRADED_PCT:-80}"
+    if   [[ "$pct" -ge "$degraded" ]]; then echo degraded
+    elif [[ "$pct" -ge "$red"      ]]; then echo red
+    elif [[ "$pct" -ge "$amber"    ]]; then echo amber
+    else echo ok
+    fi
+}
+
+# Publish context-handoff state to a cache file for out-of-band consumers
+# (polybar indicator, i3-cc handoff-switch) — same atomic temp+mv pattern as the
+# quota bar's cc-quota cache. One space-separated line, cwd last so a reader can
+# `read -r pct tokens limit state sid cwd` and cwd absorbs any trailing path:
+#   <pct> <tokens> <limit> <state> <session_id> <cwd>
+publish_context_state() {
+    local pct="$1" tokens="$2" limit="$3" state="$4" sid="$5" cwd="$6"
+    local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}" profile
+    profile=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"); profile=${profile#.}
+    mkdir -p "$cache_dir" 2>/dev/null || return 0
+    printf '%s %s %s %s %s %s\n' "${pct:-0}" "${tokens:-0}" "${limit:-0}" "$state" "${sid:-unknown}" "$cwd" \
+        2>/dev/null > "${cache_dir}/.cc-context.${profile}.$$" \
+        && mv -f "${cache_dir}/.cc-context.${profile}.$$" "${cache_dir}/cc-context.${profile}" 2>/dev/null
+}
+
 # Session cost in USD from .cost.total_cost_usd. Empty if missing/zero so the
 # caller can drop the segment.
 get_session_cost() {
@@ -241,6 +273,24 @@ LIMIT=$(get_context_limit "$JSON_INPUT")
 CONTEXT=$(get_context_window "$INPUT_TOKENS" "$LIMIT")
 COST=$(get_session_cost "$JSON_INPUT")
 RATE=$(get_rate_limit "$JSON_INPUT")
+
+# Context-handoff signal: numeric pct (empty when no usage yet) -> escalating
+# state. Color the context segment in-terminal (amber -> yellow, red/degraded ->
+# red; a no-op under NO_COLOR) and publish the state for polybar / i3-cc.
+if [[ "$INPUT_TOKENS" -gt 0 ]]; then
+    PCT=$(awk "BEGIN {printf \"%.0f\", ($INPUT_TOKENS / $LIMIT) * 100}" 2>/dev/null)
+else
+    PCT=""
+fi
+STATE=$(handoff_state "$PCT")
+case "$STATE" in
+    amber)        CONTEXT="${C_YELLOW}${CONTEXT}${C_RESET}" ;;
+    red|degraded) CONTEXT="${C_RED}${CONTEXT}${C_RESET}" ;;
+esac
+SESSION_ID=$(echo "$JSON_INPUT" | "$JQ_BINARY" -r '.session_id // "unknown"' 2>/dev/null)
+CWD=$(echo "$JSON_INPUT" | "$JQ_BINARY" -r '.workspace.current_dir // ""' 2>/dev/null)
+[[ -z "$CWD" ]] && CWD=$(pwd)
+publish_context_state "$PCT" "$INPUT_TOKENS" "$LIMIT" "$STATE" "$SESSION_ID" "$CWD"
 
 LINE="${MODEL} | ${DIRECTORY} | ${BRANCH} | ${CONTEXT}"
 [[ -n "$RATE" ]] && LINE="${LINE} | ${RATE}"

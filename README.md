@@ -22,6 +22,29 @@ pace, `░` remaining. It turns yellow when ahead of pace, red at ≥90%. Set
 segments drop when their fields are absent.
 
 <details>
+<summary>Context-handoff signal</summary>
+
+Response quality degrades as context fills, so the context segment is an
+escalating cue to switch to a fresh session **before** the rot: it turns
+**yellow** at ≥50% (`amber` — start thinking about a handoff), **red** at ≥65%,
+and stays red at ≥80% (`degraded` — switch now). Override the thresholds with
+`CC_HANDOFF_AMBER_PCT` / `CC_HANDOFF_RED_PCT` / `CC_HANDOFF_DEGRADED_PCT`.
+
+On every render it also publishes the state to a cache file for out-of-band
+consumers (a polybar indicator, an i3-cc handoff-switch) — same atomic
+temp-then-`mv` pattern as the quota bar's `cc-quota` cache:
+
+```
+# $XDG_CACHE_HOME/cc-context.<profile>   (one line)
+# <pct> <tokens> <limit> <state> <session_id> <cwd>
+55 550000 1000000 amber 8f3c… /data/proj/hq/.worktrees/01-foo
+```
+
+`cwd` is last so a reader can `read -r pct tokens limit state sid cwd` and `cwd`
+absorbs the trailing path. `state` is `init` before the first API response.
+</details>
+
+<details>
 <summary>Setup</summary>
 
 ```bash
