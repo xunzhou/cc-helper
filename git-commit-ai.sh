@@ -299,6 +299,7 @@ Constraints by verbose level (MANDATORY):
 - NEVER include promotional text like "Generated with [Claude Code]" in commit messages
 - NEVER include "Co-Authored-By: Claude" or similar AI attribution lines
 - NEVER use emoji (Unicode characters) in commit messages
+- NEVER prefix the subject with a ticket tag like "[PROJ-123]", even if recent commits have one; the subject must start with the conventional type
 - Text symbols (-, *, #) are acceptable
 - Keep commits concise and focused on the actual changes
 
@@ -420,6 +421,33 @@ git_shortstat = os.environ.get("GIT_SHORTSTAT", "")
 
 decoder = json.JSONDecoder()
 CONVENTIONAL_PATTERN = re.compile(r"^(?:revert: )?[a-z]+(?:\([^)]+\))?!?: .+")
+# Leading ticket tags like "[PROJ-1] [PROJ-2] ". The LLM (mimicking a prefixed git
+# log) or an agent's draft may already carry them, so they are split off and
+# re-applied once instead of being blindly prepended a second time.
+TICKET_PREFIX_RE = re.compile(r"^((?:\[[A-Za-z][A-Za-z0-9]*-\d+\]\s*)+)")
+TICKET_ID_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9]*-\d+)\]")
+
+
+def split_ticket_prefix(s: str):
+    m = TICKET_PREFIX_RE.match(s)
+    if not m:
+        return [], s
+    return TICKET_ID_RE.findall(m.group(1)), s[m.end() :]
+
+
+def apply_ticket_prefix(subject: str) -> str:
+    """Prepend the JIRA ticket once; keep other leading tickets, drop repeats."""
+    ids, rest = split_ticket_prefix(subject)
+    if jira_ticket:
+        ids = [jira_ticket] + ids
+    if not ids:
+        return subject
+    seen, uniq = set(), []
+    for i in ids:
+        if i.upper() not in seen:
+            seen.add(i.upper())
+            uniq.append(i)
+    return " ".join(f"[{i}]" for i in uniq) + " " + rest
 
 # House-style policy lives in the core so every surface (and every input source)
 # inherits it: strip AI-attribution / promo lines and emoji per the commit
@@ -457,7 +485,7 @@ def extract_first_json_object(text: str):
 def find_subject_line(text: str):
     lines = [ln.rstrip() for ln in text.splitlines()]
     for i, ln in enumerate(lines):
-        if CONVENTIONAL_PATTERN.match(ln.strip()):
+        if CONVENTIONAL_PATTERN.match(split_ticket_prefix(ln.strip())[1]):
             return ln.strip(), lines[i + 1 :]
     return "", []
 
@@ -482,9 +510,7 @@ def trim_blanks(lines):
 
 def emit(subject, body_text, bullets, breaking):
     """Assemble the canonical result object and print it as JSON, then exit."""
-    subject = clean_text(subject)
-    if jira_ticket:
-        subject = f"[{jira_ticket}] {subject}"
+    subject = apply_ticket_prefix(clean_text(subject))
     message = subject if not body_text else subject + "\n\n" + body_text
     result = {
         "version": 1,

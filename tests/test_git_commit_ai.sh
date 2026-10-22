@@ -109,6 +109,37 @@ repo=$(mkrepo)
 GIT_COMMIT_AI_LLM_CMD=false run "$repo" -m "fix(x): thing" PROJ-123
 assert_contains "T6 jira prefix" "$OUT" "[PROJ-123] fix(x): thing"
 
+echo "== JIRA prefix is applied once =="
+
+# T6a: generate mode where the LLM mimicked a prefixed git log -> no duplicate.
+repo=$(mkrepo)
+FAKE_JSON='{"subject":"[PROJ-123] chore(x): thing","bullets":[],"breaking_change":""}' \
+    GIT_COMMIT_AI_LLM_CMD="$FAKE_LLM" run "$repo" PROJ-123
+assert_eq "T6a generate dedupes ticket" "[PROJ-123] chore(x): thing" "$OUT"
+
+# T6b: author JSON draft already prefixed -> no duplicate.
+repo=$(mkrepo)
+GIT_COMMIT_AI_LLM_CMD=false run "$repo" -m '{"subject":"[PROJ-123] fix(x): thing"}' PROJ-123
+assert_eq "T6b author JSON dedupes ticket" "[PROJ-123] fix(x): thing" "$OUT"
+
+# T6c: plain author draft with a ticket prefix is accepted (was rejected) and deduped.
+repo=$(mkrepo)
+GIT_COMMIT_AI_LLM_CMD=false run "$repo" -m "[PROJ-123] fix(x): thing" PROJ-123
+assert_exit "T6c plain prefixed accepted" 0 "$CODE"
+assert_eq "T6c plain dedupes ticket" "[PROJ-123] fix(x): thing" "$OUT"
+
+# T6d: other tickets already in the prefix are kept; the CLI ticket goes first.
+repo=$(mkrepo)
+GIT_COMMIT_AI_LLM_CMD=false run "$repo" -m "[PROJ-9] [PROJ-123] fix(x): thing" PROJ-123
+assert_eq "T6d keeps other tickets" "[PROJ-123] [PROJ-9] fix(x): thing" "$OUT"
+
+# T6e: the prompt tells the LLM not to add a ticket prefix itself.
+repo=$(mkrepo)
+cap=$(mktemp)
+PROMPT_CAPTURE="$cap" GIT_COMMIT_AI_LLM_CMD="$FAKE_LLM" run "$repo" PROJ-123
+assert_contains "T6e prompt forbids ticket prefix" "$(cat "$cap")" "NEVER prefix the subject with a ticket tag"
+rm -f "$cap"
+
 echo "== --context (generate mode): inject the WHY =="
 
 # T7: --context text reaches the LLM prompt.
